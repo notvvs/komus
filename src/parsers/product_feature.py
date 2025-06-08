@@ -32,7 +32,7 @@ class KomusParser(BaseParserBrowser):
         try:
             total_height = await self.page.evaluate("document.body.scrollHeight")
 
-            for position in range(0, total_height, 300):
+            for position in range(0, total_height, 900):
                 await self.page.evaluate(f"window.scrollTo(0, {position})")
                 await asyncio.sleep(0.3)
 
@@ -41,7 +41,6 @@ class KomusParser(BaseParserBrowser):
                     total_height = new_height
 
             await self.page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-            await asyncio.sleep(1)
 
         except Exception as e:
             logger.error(f"Ошибка скролла: {e}")
