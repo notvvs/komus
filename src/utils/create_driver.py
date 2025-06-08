@@ -5,12 +5,12 @@ from playwright.async_api import async_playwright
 
 
 @asynccontextmanager
-async def get_page(headless: bool = False):
+async def get_page(headless: bool = True):
     """Контекстный менеджер для получения страницы"""
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(
-            headless=False,
+            headless=headless,
             args=[
                 # Основные для стабильности
                 "--no-sandbox",
