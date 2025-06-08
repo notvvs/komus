@@ -1,12 +1,17 @@
 import asyncio
+import logging
+from src.services.parser_service import KomusParserService
 
-from src.parsers.start_page import start_page_parser
-from src.scrapers.start_page import start_page_scraper
+
+async def main():
+    logging.basicConfig(level=logging.INFO, format='%(levelname)s - %(message)s')
+
+    async with KomusParserService() as service:
+        await service.run_parsing(
+            limit_categories=1,
+            limit_products=None
+        )
 
 
-async def test(url):
-    html = await start_page_scraper.scrape_page(url)
-    test = await start_page_parser.parse_page(html)
-    return test
-
-print(asyncio.run(test('https://www.komus.ru/katalog/c/0/?from=menu-v1-vse_kategorii')))
+if __name__ == "__main__":
+    asyncio.run(main())
