@@ -10,7 +10,6 @@ class BaseParser(ABC):
 
 class BaseParserBrowser(ABC):
     """Базовый абстрактный класс для парсеров"""
-
     @abstractmethod
     async def parse_page(self, page) -> Product:
         """Парсинг страницы товара"""

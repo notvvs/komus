@@ -1,13 +1,11 @@
+import asyncio
 from src.scrapers.base_scraper import BaseScraper
-from src.utils.http import fetch
-from src.utils.session import create_komus_session
 
 
 class StartPageScraper(BaseScraper):
 
-    async def scrape_page(self, url: str) -> str:
-        async with create_komus_session() as session:
-            html = await fetch(session, url)
-            return html
-
-
+    async def scrape_page(self, page, url: str) -> str:
+        """Получение HTML через Playwright"""
+        await page.goto(url, wait_until='domcontentloaded', timeout=15000)
+        await asyncio.sleep(2)  # Ждем полной загрузки
+        return await page.content()

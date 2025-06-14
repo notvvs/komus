@@ -4,12 +4,16 @@ from src.services.parser_service import KomusParserService
 
 
 async def main():
-    logging.basicConfig(level=logging.INFO, format='%(levelname)s - %(message)s')
+    """Главная функция запуска парсера"""
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s'
+    )
 
     async with KomusParserService() as service:
         await service.run_parsing(
-            limit_categories=1,
-            limit_products=None
+            limit_categories=2,  # Ограничение категорий для тестирования
+            limit_products=5     # Ограничение товаров для тестирования
         )
 
 
