@@ -171,7 +171,112 @@ class KomusParser(BaseParserBrowser):
         return [Attribute(attr_name=key, attr_value=value) for key, value in specs_dict.items()]
 
     async def _get_price_info(self) -> List[PriceInfo]:
-        """Информация о ценах"""
+        """Информация о ценах - обрабатывает как обычные цены, так и таблицы объемных скидок"""
+        try:
+            # Сначала проверяем, есть ли таблица объемных цен
+            prices_table = self.page.locator('.prices-table')
+            if await prices_table.count() > 0:
+                return await self._get_volume_prices()
+
+            # Если нет таблицы объемных цен, используем обычную логику
+            return await self._get_regular_prices()
+
+        except Exception as e:
+            logger.error(f"Ошибка извлечения цены: {e}")
+            return [PriceInfo(qnt=1, discount=0, price=0)]
+
+    async def _get_volume_prices(self) -> List[PriceInfo]:
+        """Извлечение цен из таблицы объемных скидок"""
+        price_infos = []
+
+        try:
+            # Находим все строки в таблице цен
+            price_rows = self.page.locator('.prices-table__row')
+
+            for i in range(await price_rows.count()):
+                row = price_rows.nth(i)
+
+                # Извлекаем данные из атрибутов (более надежно)
+                start_range = await row.get_attribute('data-start-range')
+                price_value = await row.get_attribute('data-price-value')
+
+                if start_range and price_value:
+                    try:
+                        quantity = int(start_range)
+                        price = float(price_value)
+
+                        # Вычисляем скидку относительно первой цены
+                        discount = 0
+                        if price_infos:  # Если это не первая цена
+                            base_price = price_infos[0].price
+                            if base_price > price:
+                                discount = round(((base_price - price) / base_price) * 100, 2)
+
+                        price_infos.append(PriceInfo(qnt=quantity, discount=discount, price=price))
+
+                    except (ValueError, TypeError):
+                        continue
+
+            # Если не удалось извлечь из атрибутов, попробуем парсить текст
+            if not price_infos:
+                price_infos = await self._parse_volume_prices_from_text()
+
+            return price_infos if price_infos else [PriceInfo(qnt=1, discount=0, price=0)]
+
+        except Exception as e:
+            logger.error(f"Ошибка извлечения объемных цен: {e}")
+            return [PriceInfo(qnt=1, discount=0, price=0)]
+
+    async def _parse_volume_prices_from_text(self) -> List[PriceInfo]:
+        """Парсинг объемных цен из текстового содержимого"""
+        price_infos = []
+
+        try:
+            price_rows = self.page.locator('.prices-table__row')
+
+            for i in range(await price_rows.count()):
+                row = price_rows.nth(i)
+
+                # Извлекаем цену
+                price_elem = row.locator('.prices-table__price span').first
+                price_text = await price_elem.text_content() if await price_elem.count() > 0 else ""
+
+                # Извлекаем диапазон количества
+                range_elem = row.locator('.prices-table__range')
+                range_text = await range_elem.text_content() if await range_elem.count() > 0 else ""
+
+                if price_text and range_text:
+                    # Очищаем цену от пробелов и символов
+                    clean_price = re.sub(r'[^\d,.]', '', price_text.replace('\u00a0', '').replace('&nbsp;', ''))
+
+                    # Извлекаем количество из текста диапазона (например, "от 2 уп.")
+                    quantity_match = re.search(r'от\s*(\d+)', range_text)
+
+                    if clean_price and quantity_match:
+                        try:
+                            price = float(clean_price.replace(',', '.'))
+                            quantity = int(quantity_match.group(1))
+
+                            # Вычисляем скидку относительно первой цены
+                            discount = 0
+                            if price_infos:  # Если это не первая цена
+                                base_price = price_infos[0].price
+                                if base_price > price:
+                                    discount = round(((base_price - price) / base_price) * 100, 2)
+
+                            price_infos.append(PriceInfo(qnt=quantity, discount=discount, price=price))
+
+                        except (ValueError, TypeError):
+                            continue
+
+            return price_infos
+
+        except Exception as e:
+            logger.error(f"Ошибка парсинга объемных цен из текста: {e}")
+            return []
+
+    async def _get_regular_prices(self) -> List[PriceInfo]:
+        """Извлечение обычных цен (без объемных скидок)"""
         try:
             main_price = None
             old_price = None
@@ -209,7 +314,7 @@ class KomusParser(BaseParserBrowser):
             return [PriceInfo(qnt=1, discount=0, price=0)]
 
         except Exception as e:
-            logger.error(f"Ошибка извлечения цены: {e}")
+            logger.error(f"Ошибка извлечения обычной цены: {e}")
             return [PriceInfo(qnt=1, discount=0, price=0)]
 
     async def _get_stock_info(self) -> str:
