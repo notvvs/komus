@@ -1,5 +1,6 @@
 import logging
 from motor.motor_asyncio import AsyncIOMotorClient
+from src.core.settings import settings
 
 logger = logging.getLogger(__name__)
 
@@ -10,10 +11,10 @@ class MongoClient:
         self.database = None
 
     async def connect(self):
-        self.client = AsyncIOMotorClient("mongodb://localhost:27017")
+        self.client = AsyncIOMotorClient(settings.mongo_url)
         await self.client.admin.command('ping')
-        self.database = self.client["komus_parser"]
-        logger.info("✅ MongoDB подключен")
+        self.database = self.client[settings.db_name]
+        logger.info(f"✅ MongoDB подключен: {settings.db_name}")
 
     async def disconnect(self):
         if self.client:

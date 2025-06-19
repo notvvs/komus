@@ -1,16 +1,12 @@
 from abc import abstractmethod, ABC
-
+from typing import Union, List, Any
 from src.schemas.product import Product
 
 
 class BaseParser(ABC):
-    @abstractmethod
-    async def parse_page(self, html: str):
-        pass
+    """Единый базовый класс для всех парсеров"""
 
-class BaseParserBrowser(ABC):
-    """Базовый абстрактный класс для парсеров"""
     @abstractmethod
-    async def parse_page(self, page) -> Product:
-        """Парсинг страницы товара"""
+    async def parse_page(self, page, *args, **kwargs) -> Union[Product, List[str]]:
+        """Парсинг страницы - возвращает Product для товара или List[str] для категорий/ссылок"""
         pass

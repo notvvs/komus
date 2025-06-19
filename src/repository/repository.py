@@ -1,4 +1,5 @@
 import logging
+from src.core.settings import settings
 from src.repository.mongo_client import mongo_client
 from src.schemas.product import Product
 
@@ -12,7 +13,7 @@ class ProductRepository:
     @property
     def collection(self):
         if self._collection is None:
-            self._collection = mongo_client.get_collection("products")
+            self._collection = mongo_client.get_collection(settings.collection_name)
         return self._collection
 
     async def save_product(self, product: Product):

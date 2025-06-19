@@ -3,13 +3,14 @@ import re
 import logging
 from typing import List
 
-from src.parsers.base_parser import BaseParserBrowser
+from src.core.settings import settings
+from src.parsers.base_parser import BaseParser
 from src.schemas.product import Product, Attribute, PriceInfo, SupplierOffer, Supplier
 
-# Настройка логирования
 logger = logging.getLogger(__name__)
 
-class KomusParser(BaseParserBrowser):
+
+class KomusParser(BaseParser):
     """Парсер страниц товаров Komus"""
 
     def __init__(self, url: str):
@@ -17,7 +18,7 @@ class KomusParser(BaseParserBrowser):
         self.page = None
 
     async def parse_page(self, page) -> Product:
-        """Основной метод парсинга страницы"""
+        """Основной метод парсинга страницы товара"""
         self.page = page
         logger.info(f"Начинаем парсинг: {self.url}")
 
@@ -28,13 +29,13 @@ class KomusParser(BaseParserBrowser):
         return product
 
     async def _scroll_page(self):
-        """Полный скролл страницы"""
+        """Полный скролл страницы для загрузки всего контента"""
         try:
             total_height = await self.page.evaluate("document.body.scrollHeight")
 
             for position in range(0, total_height, 900):
                 await self.page.evaluate(f"window.scrollTo(0, {position})")
-                await asyncio.sleep(0.3)
+                await asyncio.sleep(settings.scroll_delay)
 
                 new_height = await self.page.evaluate("document.body.scrollHeight")
                 if new_height > total_height:
@@ -46,7 +47,7 @@ class KomusParser(BaseParserBrowser):
             logger.error(f"Ошибка скролла: {e}")
 
     async def _create_product(self) -> Product:
-        """Создание объекта Product"""
+        """Создание объекта Product со всеми данными"""
         return Product(
             title=await self._get_title(),
             description=await self._get_description(),
@@ -60,32 +61,32 @@ class KomusParser(BaseParserBrowser):
         )
 
     async def _get_title(self) -> str:
-        """Название товара"""
+        """Извлечение названия товара"""
         try:
             title_elem = self.page.locator('h1').first
             if await title_elem.count() > 0:
                 return await title_elem.text_content()
-        except:
+        except Exception:
             pass
         return "Нет данных"
 
     async def _get_description(self) -> str:
-        """Описание товара"""
+        """Извлечение описания товара"""
         try:
             desc_elem = self.page.locator('.product-info-details__description')
             if await desc_elem.count() > 0:
                 return await desc_elem.text_content()
-        except:
+        except Exception:
             pass
         return "Нет данных"
 
     async def _get_article(self) -> str:
-        """Артикул товара"""
+        """Извлечение артикула из URL"""
         match = re.search(r'/p/(\d+)/', self.url)
         return match.group(1) if match else "Нет данных"
 
     async def _get_brand(self) -> str:
-        """Торговая марка"""
+        """Извлечение торговой марки"""
         try:
             brand_elem = self.page.locator('.product-info-specifications__common-link .v-link')
             if await brand_elem.count() > 0:
@@ -95,12 +96,12 @@ class KomusParser(BaseParserBrowser):
             for key in ['Торговая марка', 'Бренд', 'Производитель', 'Марка']:
                 if key in specs:
                     return specs[key]
-        except:
+        except Exception:
             pass
         return "Нет данных"
 
     async def _get_category(self) -> str:
-        """Категория - предпоследнее значение из breadcrumbs"""
+        """Извлечение категории из breadcrumbs"""
         try:
             breadcrumbs = self.page.locator('.breadcrumbs__item a, .breadcrumb a, nav a')
             if await breadcrumbs.count() > 0:
@@ -114,34 +115,34 @@ class KomusParser(BaseParserBrowser):
                     return categories[-2]
                 elif len(categories) == 1:
                     return categories[0]
-        except:
+        except Exception:
             pass
         return "Нет данных"
 
     async def _get_country_of_origin(self) -> str:
-        """Страна происхождения"""
+        """Извлечение страны происхождения"""
         try:
             specs = await self._get_attributes_dict()
             for key in ['Страна происхождения', 'Страна-производитель', 'Страна изготовления']:
                 if key in specs:
                     return specs[key]
-        except:
+        except Exception:
             pass
         return "Нет данных"
 
     async def _get_warranty_months(self) -> str:
-        """Гарантийный срок"""
+        """Извлечение гарантийного срока"""
         try:
             specs = await self._get_attributes_dict()
             for key in ['Гарантийный срок', 'Гарантия', 'Срок гарантии']:
                 if key in specs:
                     return specs[key]
-        except:
+        except Exception:
             pass
         return "Нет данных"
 
     async def _get_attributes_dict(self) -> dict:
-        """Характеристики в виде словаря"""
+        """Извлечение всех характеристик в виде словаря"""
         try:
             specifications = {}
             spec_items = self.page.locator('.product-info-specifications__item')
@@ -162,23 +163,21 @@ class KomusParser(BaseParserBrowser):
                             specifications[key] = value
 
             return specifications
-        except:
+        except Exception:
             return {}
 
     async def _get_attributes(self) -> List[Attribute]:
-        """Характеристики в виде списка"""
+        """Преобразование характеристик в список объектов"""
         specs_dict = await self._get_attributes_dict()
         return [Attribute(attr_name=key, attr_value=value) for key, value in specs_dict.items()]
 
     async def _get_price_info(self) -> List[PriceInfo]:
-        """Информация о ценах - обрабатывает как обычные цены, так и таблицы объемных скидок"""
+        """Извлечение информации о ценах (поддерживает объемные скидки)"""
         try:
-            # Сначала проверяем, есть ли таблица объемных цен
             prices_table = self.page.locator('.prices-table')
             if await prices_table.count() > 0:
                 return await self._get_volume_prices()
 
-            # Если нет таблицы объемных цен, используем обычную логику
             return await self._get_regular_prices()
 
         except Exception as e:
@@ -190,13 +189,11 @@ class KomusParser(BaseParserBrowser):
         price_infos = []
 
         try:
-            # Находим все строки в таблице цен
             price_rows = self.page.locator('.prices-table__row')
 
             for i in range(await price_rows.count()):
                 row = price_rows.nth(i)
 
-                # Извлекаем данные из атрибутов (более надежно)
                 start_range = await row.get_attribute('data-start-range')
                 price_value = await row.get_attribute('data-price-value')
 
@@ -205,9 +202,8 @@ class KomusParser(BaseParserBrowser):
                         quantity = int(start_range)
                         price = float(price_value)
 
-                        # Вычисляем скидку относительно первой цены
                         discount = 0
-                        if price_infos:  # Если это не первая цена
+                        if price_infos:
                             base_price = price_infos[0].price
                             if base_price > price:
                                 discount = round(((base_price - price) / base_price) * 100, 2)
@@ -217,71 +213,18 @@ class KomusParser(BaseParserBrowser):
                     except (ValueError, TypeError):
                         continue
 
-            # Если не удалось извлечь из атрибутов, попробуем парсить текст
-            if not price_infos:
-                price_infos = await self._parse_volume_prices_from_text()
-
             return price_infos if price_infos else [PriceInfo(qnt=1, discount=0, price=0)]
 
         except Exception as e:
             logger.error(f"Ошибка извлечения объемных цен: {e}")
             return [PriceInfo(qnt=1, discount=0, price=0)]
 
-    async def _parse_volume_prices_from_text(self) -> List[PriceInfo]:
-        """Парсинг объемных цен из текстового содержимого"""
-        price_infos = []
-
-        try:
-            price_rows = self.page.locator('.prices-table__row')
-
-            for i in range(await price_rows.count()):
-                row = price_rows.nth(i)
-
-                # Извлекаем цену
-                price_elem = row.locator('.prices-table__price span').first
-                price_text = await price_elem.text_content() if await price_elem.count() > 0 else ""
-
-                # Извлекаем диапазон количества
-                range_elem = row.locator('.prices-table__range')
-                range_text = await range_elem.text_content() if await range_elem.count() > 0 else ""
-
-                if price_text and range_text:
-                    # Очищаем цену от пробелов и символов
-                    clean_price = re.sub(r'[^\d,.]', '', price_text.replace('\u00a0', '').replace('&nbsp;', ''))
-
-                    # Извлекаем количество из текста диапазона (например, "от 2 уп.")
-                    quantity_match = re.search(r'от\s*(\d+)', range_text)
-
-                    if clean_price and quantity_match:
-                        try:
-                            price = float(clean_price.replace(',', '.'))
-                            quantity = int(quantity_match.group(1))
-
-                            # Вычисляем скидку относительно первой цены
-                            discount = 0
-                            if price_infos:  # Если это не первая цена
-                                base_price = price_infos[0].price
-                                if base_price > price:
-                                    discount = round(((base_price - price) / base_price) * 100, 2)
-
-                            price_infos.append(PriceInfo(qnt=quantity, discount=discount, price=price))
-
-                        except (ValueError, TypeError):
-                            continue
-
-            return price_infos
-
-        except Exception as e:
-            logger.error(f"Ошибка парсинга объемных цен из текста: {e}")
-            return []
-
     async def _get_regular_prices(self) -> List[PriceInfo]:
-        """Извлечение обычных цен (без объемных скидок)"""
+        """Извлечение обычных цен без объемных скидок"""
         try:
             main_price = None
             old_price = None
 
-            # Основная цена
             main_price_elem = self.page.locator('.js-current-price')
             if await main_price_elem.count() > 0:
                 price_text = await main_price_elem.text_content()
@@ -292,7 +235,6 @@ class KomusParser(BaseParserBrowser):
                     except ValueError:
                         pass
 
-            # Старая цена
             old_price_elem = self.page.locator('.product-price__old-price span').first
             if await old_price_elem.count() > 0:
                 old_price_text = await old_price_elem.text_content()
@@ -303,7 +245,6 @@ class KomusParser(BaseParserBrowser):
                     except ValueError:
                         pass
 
-            # Создаем PriceInfo
             if main_price and main_price > 0:
                 discount = 0
                 if old_price and old_price > main_price:
@@ -318,7 +259,7 @@ class KomusParser(BaseParserBrowser):
             return [PriceInfo(qnt=1, discount=0, price=0)]
 
     async def _get_stock_info(self) -> str:
-        """Наличие - только количество"""
+        """Извлечение информации о наличии"""
         try:
             stock_count_elem = self.page.locator('.js-product-stock-count')
             if await stock_count_elem.count() > 0:
@@ -326,11 +267,11 @@ class KomusParser(BaseParserBrowser):
                 if stock_text and stock_text.strip():
                     return stock_text.strip().replace('\u00a0', ' ')
             return "Нет данных"
-        except:
+        except Exception:
             return "Нет данных"
 
     async def _get_delivery_info(self) -> str:
-        """Информация о доставке"""
+        """Извлечение информации о доставке"""
         try:
             delivery_elem = self.page.locator('.product-status__message--green span')
             if await delivery_elem.count() > 0:
@@ -338,11 +279,11 @@ class KomusParser(BaseParserBrowser):
                 if delivery_text and delivery_text.strip():
                     return delivery_text.strip()
             return "Нет данных"
-        except:
+        except Exception:
             return "Нет данных"
 
     async def _get_package_info(self) -> str:
-        """Информация об упаковке"""
+        """Извлечение информации об упаковке"""
         try:
             package_elem = self.page.locator('.transport-package__description').first
             if await package_elem.count() > 0:
@@ -350,7 +291,7 @@ class KomusParser(BaseParserBrowser):
                 if package_text and package_text.strip():
                     return f"В коробе {package_text.strip()}"
             return "Нет данных"
-        except:
+        except Exception:
             return "Нет данных"
 
     async def _create_supplier_offer(self) -> SupplierOffer:
@@ -364,8 +305,6 @@ class KomusParser(BaseParserBrowser):
         )
 
     async def _create_supplier(self) -> Supplier:
-        """Создание поставщика"""
+        """Создание объекта поставщика"""
         offer = await self._create_supplier_offer()
         return Supplier(supplier_offers=[offer])
-
-
