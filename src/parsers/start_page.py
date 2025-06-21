@@ -173,4 +173,8 @@ class StartPageParser(BaseParser):
         """Получение HTML страницы"""
         await page.goto(url, wait_until='domcontentloaded', timeout=settings.page_timeout)
         await asyncio.sleep(settings.page_load_delay)
+
+        # Добавляем небольшую дополнительную задержку перед получением контента
+        await asyncio.sleep(0.5)
+
         return await page.content()

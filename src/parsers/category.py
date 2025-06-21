@@ -27,6 +27,9 @@ class CategoryParser(BaseParser):
         await page.goto(category_url, wait_until='domcontentloaded', timeout=settings.page_timeout)
         await asyncio.sleep(settings.page_load_delay)
 
+        # Добавляем небольшую дополнительную задержку перед получением контента
+        await asyncio.sleep(0.5)
+
         html = await page.content()
         soup = BeautifulSoup(html, 'html.parser')
         total_pages = self._calculate_pages_count(soup)
@@ -44,6 +47,9 @@ class CategoryParser(BaseParser):
         """Получение ссылок на товары с одной страницы"""
         await page.goto(page_url, wait_until='domcontentloaded', timeout=settings.page_timeout)
         await asyncio.sleep(settings.page_load_delay)
+
+        # Добавляем небольшую дополнительную задержку перед получением контента
+        await asyncio.sleep(0.5)
 
         html = await page.content()
         return self._parse_product_links_from_html(html)
