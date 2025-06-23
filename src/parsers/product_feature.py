@@ -1,310 +1,392 @@
 import asyncio
 import re
 import logging
-from typing import List
+from typing import List, Optional, Dict, Any
+import json
 
 from src.core.settings import settings
 from src.parsers.base_parser import BaseParser
 from src.schemas.product import Product, Attribute, PriceInfo, SupplierOffer, Supplier
+from src.utils.http_requests import make_request, refresh_session_on_503
 
 logger = logging.getLogger(__name__)
 
 
 class KomusParser(BaseParser):
-    """Парсер страниц товаров Komus"""
+    """Парсер товаров Komus через API"""
 
-    def __init__(self, url: str):
-        self.url = url
-        self.page = None
+    def __init__(self, product_id: str = None, product_url: str = None):
+        self.product_id = product_id
+        self.product_url = product_url
+        self.api_data = None
+        self._default_return_type = 'product'
 
-    async def parse_page(self, page) -> Product:
-        """Основной метод парсинга страницы товара"""
-        self.page = page
-        logger.info(f"Начинаем парсинг: {self.url}")
+        # Извлекаем ID из URL если не передан напрямую
+        if not self.product_id and self.product_url:
+            self.product_id = self._extract_product_id_from_url(self.product_url)
 
-        await self._scroll_page()
-        product = await self._create_product()
+    def _extract_product_id_from_url(self, url: str) -> str:
+        """Извлечение ID товара из URL"""
+        match = re.search(r'/p/(\d+)/', url)
+        return match.group(1) if match else ""
 
-        logger.info(f"Парсинг завершен: {product.title[:50]}...")
-        return product
+    async def parse_page(self, product_id: str = None, product_url: str = None) -> Product:
+        """Основной метод парсинга товара через API"""
+        if product_id:
+            self.product_id = product_id
+        elif product_url:
+            self.product_url = product_url
+            self.product_id = self._extract_product_id_from_url(product_url)
 
-    async def _scroll_page(self):
-        """Полный скролл страницы для загрузки всего контента"""
+        if not self.product_id:
+            logger.error("Product ID not found")
+            return self._create_error_product("Не удалось извлечь ID товара")
+
+        logger.info(f"Parsing product via API: {self.product_id}")
+
         try:
-            total_height = await self.page.evaluate("document.body.scrollHeight")
+            # Получаем данные через API
+            self.api_data = await self._get_product_api_data()
 
-            for position in range(0, total_height, 900):
-                await self.page.evaluate(f"window.scrollTo(0, {position})")
-                await asyncio.sleep(settings.scroll_delay)
+            if not self.api_data:
+                logger.error(f"Failed to get API data for product {self.product_id}")
+                return self._create_error_product("Не удалось получить данные через API")
 
-                new_height = await self.page.evaluate("document.body.scrollHeight")
-                if new_height > total_height:
-                    total_height = new_height
+            # Создаем продукт из API данных
+            product = await self._create_product_from_api()
 
-            await self.page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            logger.info(f"Successfully parsed product: {product.title[:50]}...")
+            return product
 
         except Exception as e:
-            logger.error(f"Ошибка скролла: {e}")
+            logger.error(f"Error parsing product {self.product_id}: {e}")
+            return self._create_error_product(f"Ошибка парсинга: {str(e)}")
 
-    async def _create_product(self) -> Product:
-        """Создание объекта Product со всеми данными"""
+    async def _get_product_api_data(self) -> Optional[Dict[str, Any]]:
+        """Получение данных товара через API"""
+        try:
+            # API endpoint для товара
+            api_url = f"https://www.komus.ru/api/product/{self.product_id}"
+
+            # Параметры API запроса
+            params = {
+                'fields': 'featureGroups,productSet,trademark,name,description,code,price,stock,images,categories'
+            }
+
+            # Заголовки для API запроса
+            api_headers = {
+                'accept': 'application/json',
+                'accept-language': 'ru,en;q=0.9',
+                'priority': 'u=1, i',
+                'sec-ch-ua': '"Chromium";v="134", "Not:A-Brand";v="24", "YaBrowser";v="25.4", "Yowser";v="2.5"',
+                'sec-ch-ua-mobile': '?0',
+                'sec-ch-ua-platform': '"macOS"',
+                'sec-fetch-dest': 'empty',
+                'sec-fetch-mode': 'cors',
+                'sec-fetch-site': 'same-origin',
+                'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 YaBrowser/25.4.0.0 Safari/537.36',
+                'x-requested-with': 'XMLHttpRequest'
+            }
+
+            # Если есть referer (оригинальная страница товара), добавляем
+            if self.product_url:
+                api_headers['referer'] = self.product_url
+
+            # Используем session manager - сессия создается только при необходимости
+            response = await make_request(
+                url=api_url,
+                headers=api_headers,
+                method="GET",
+                params=params,
+                max_retries=3
+            )
+
+            if response.status_code == 200:
+                try:
+                    return response.json()
+                except json.JSONDecodeError as e:
+                    logger.error(f"Failed to decode JSON response: {e}")
+                    return None
+            else:
+                logger.error(f"API request failed with status {response.status_code}")
+                return None
+
+        except Exception as e:
+            logger.error(f"Error getting API data for product {self.product_id}: {e}")
+            return None
+
+    async def _create_product_from_api(self) -> Product:
+        """Создание объекта Product из API данных"""
         return Product(
-            title=await self._get_title(),
-            description=await self._get_description(),
-            article=await self._get_article(),
-            brand=await self._get_brand(),
-            country_of_origin=await self._get_country_of_origin(),
-            warranty_months=await self._get_warranty_months(),
-            category=await self._get_category(),
-            attributes=await self._get_attributes(),
-            suppliers=[await self._create_supplier()]
+            title=await self._get_title_from_api(),
+            description=await self._get_description_from_api(),
+            article=self.product_id,
+            brand=await self._get_brand_from_api(),
+            country_of_origin=await self._get_country_from_api(),
+            warranty_months=await self._get_warranty_from_api(),
+            category=await self._get_category_from_api(),
+            attributes=await self._get_attributes_from_api(),
+            suppliers=[await self._create_supplier_from_api()]
         )
 
-    async def _get_title(self) -> str:
-        """Извлечение названия товара"""
+    def _create_error_product(self, error_msg: str) -> Product:
+        """Создание продукта с ошибкой"""
+        return Product(
+            title=f"Ошибка: {error_msg}",
+            description="Произошла ошибка при извлечении данных товара",
+            article=self.product_id or "unknown",
+            brand="Неизвестно",
+            country_of_origin="Нет данных",
+            warranty_months="Нет данных",
+            category="Нет данных",
+            attributes=[],
+            suppliers=[]
+        )
+
+    async def _get_title_from_api(self) -> str:
+        """Извлечение названия товара из API"""
         try:
-            title_elem = self.page.locator('h1').first
-            if await title_elem.count() > 0:
-                return await title_elem.text_content()
-        except Exception:
-            pass
+            # Пытаемся получить название из разных возможных полей
+            if 'name' in self.api_data:
+                return self.api_data['name']
+            elif 'title' in self.api_data:
+                return self.api_data['title']
+            elif 'productName' in self.api_data:
+                return self.api_data['productName']
+        except Exception as e:
+            logger.error(f"Error getting title from API: {e}")
+
         return "Нет данных"
 
-    async def _get_description(self) -> str:
-        """Извлечение описания товара"""
+    async def _get_description_from_api(self) -> str:
+        """Извлечение описания товара из API"""
         try:
-            desc_elem = self.page.locator('.product-info-details__description')
-            if await desc_elem.count() > 0:
-                return await desc_elem.text_content()
-        except Exception:
-            pass
+            if 'description' in self.api_data:
+                return self.api_data['description']
+            elif 'shortDescription' in self.api_data:
+                return self.api_data['shortDescription']
+        except Exception as e:
+            logger.error(f"Error getting description from API: {e}")
+
         return "Нет данных"
 
-    async def _get_article(self) -> str:
-        """Извлечение артикула из URL"""
-        match = re.search(r'/p/(\d+)/', self.url)
-        return match.group(1) if match else "Нет данных"
-
-    async def _get_brand(self) -> str:
-        """Извлечение торговой марки"""
+    async def _get_brand_from_api(self) -> str:
+        """Извлечение бренда из API"""
         try:
-            brand_elem = self.page.locator('.product-info-specifications__common-link .v-link')
-            if await brand_elem.count() > 0:
-                return await brand_elem.text_content()
+            # Сначала пытаемся получить из trademark
+            if 'trademark' in self.api_data and self.api_data['trademark']:
+                trademark = self.api_data['trademark']
+                if 'name' in trademark:
+                    return trademark['name']
 
-            specs = await self._get_attributes_dict()
-            for key in ['Торговая марка', 'Бренд', 'Производитель', 'Марка']:
-                if key in specs:
-                    return specs[key]
-        except Exception:
-            pass
-        return "Нет данных"
+            # Если не нашли в trademark, ищем в характеристиках
+            brand_keys = ['Торговая марка', 'Бренд', 'Производитель', 'Марка']
+            attributes_dict = await self._get_attributes_dict_from_api()
 
-    async def _get_category(self) -> str:
-        """Извлечение категории из breadcrumbs"""
-        try:
-            breadcrumbs = self.page.locator('.breadcrumbs__item a, .breadcrumb a, nav a')
-            if await breadcrumbs.count() > 0:
-                categories = []
-                for i in range(await breadcrumbs.count()):
-                    text = await breadcrumbs.nth(i).text_content()
-                    if text and text.strip() and text.strip().lower() != 'главная':
-                        categories.append(text.strip())
-
-                if len(categories) >= 2:
-                    return categories[-2]
-                elif len(categories) == 1:
-                    return categories[0]
-        except Exception:
-            pass
-        return "Нет данных"
-
-    async def _get_country_of_origin(self) -> str:
-        """Извлечение страны происхождения"""
-        try:
-            specs = await self._get_attributes_dict()
-            for key in ['Страна происхождения', 'Страна-производитель', 'Страна изготовления']:
-                if key in specs:
-                    return specs[key]
-        except Exception:
-            pass
-        return "Нет данных"
-
-    async def _get_warranty_months(self) -> str:
-        """Извлечение гарантийного срока"""
-        try:
-            specs = await self._get_attributes_dict()
-            for key in ['Гарантийный срок', 'Гарантия', 'Срок гарантии']:
-                if key in specs:
-                    return specs[key]
-        except Exception:
-            pass
-        return "Нет данных"
-
-    async def _get_attributes_dict(self) -> dict:
-        """Извлечение всех характеристик в виде словаря"""
-        try:
-            specifications = {}
-            spec_items = self.page.locator('.product-info-specifications__item')
-
-            for i in range(await spec_items.count()):
-                item = spec_items.nth(i)
-                key_elem = item.locator('.product-info-specifications__key')
-                value_elem = item.locator('.product-info-specifications-value, .product-info-specifications__value')
-
-                if await key_elem.count() > 0 and await value_elem.count() > 0:
-                    key = await key_elem.text_content()
-                    value = await value_elem.text_content()
-
-                    if key and value:
-                        key = re.sub(r'\s+', ' ', key.strip())
-                        value = re.sub(r'\s+', ' ', value.strip())
-                        if key and value:
-                            specifications[key] = value
-
-            return specifications
-        except Exception:
-            return {}
-
-    async def _get_attributes(self) -> List[Attribute]:
-        """Преобразование характеристик в список объектов"""
-        specs_dict = await self._get_attributes_dict()
-        return [Attribute(attr_name=key, attr_value=value) for key, value in specs_dict.items()]
-
-    async def _get_price_info(self) -> List[PriceInfo]:
-        """Извлечение информации о ценах (поддерживает объемные скидки)"""
-        try:
-            prices_table = self.page.locator('.prices-table')
-            if await prices_table.count() > 0:
-                return await self._get_volume_prices()
-
-            return await self._get_regular_prices()
+            for key in brand_keys:
+                if key in attributes_dict:
+                    return attributes_dict[key]
 
         except Exception as e:
-            logger.error(f"Ошибка извлечения цены: {e}")
+            logger.error(f"Error getting brand from API: {e}")
+
+        return "Нет данных"
+
+    async def _get_country_from_api(self) -> str:
+        """Извлечение страны происхождения из API"""
+        try:
+            country_keys = ['Страна происхождения', 'Страна-производитель', 'Страна изготовления']
+            attributes_dict = await self._get_attributes_dict_from_api()
+
+            for key in country_keys:
+                if key in attributes_dict:
+                    return attributes_dict[key]
+
+        except Exception as e:
+            logger.error(f"Error getting country from API: {e}")
+
+        return "Нет данных"
+
+    async def _get_warranty_from_api(self) -> str:
+        """Извлечение гарантийного срока из API"""
+        try:
+            warranty_keys = ['Гарантийный срок', 'Гарантия', 'Срок гарантии']
+            attributes_dict = await self._get_attributes_dict_from_api()
+
+            for key in warranty_keys:
+                if key in attributes_dict:
+                    value = attributes_dict[key]
+                    # Если есть единица измерения, добавляем её
+                    if key == 'Гарантийный срок' and value.isdigit():
+                        return f"{value} мес"
+                    return value
+
+        except Exception as e:
+            logger.error(f"Error getting warranty from API: {e}")
+
+        return "Нет данных"
+
+    async def _get_category_from_api(self) -> str:
+        """Извлечение категории из API"""
+        try:
+            # Пытаемся получить категорию из разных возможных полей
+            if 'categories' in self.api_data and self.api_data['categories']:
+                categories = self.api_data['categories']
+                if isinstance(categories, list) and len(categories) > 0:
+                    # Берем последнюю категорию (наиболее специфичную)
+                    category = categories[-1]
+                    if isinstance(category, dict) and 'name' in category:
+                        return category['name']
+                    elif isinstance(category, str):
+                        return category
+
+            # Можно также попытаться извлечь из URL если есть
+            if self.product_url:
+                # Пытаемся извлечь категорию из URL
+                url_parts = self.product_url.split('/')
+                for i, part in enumerate(url_parts):
+                    if part == 'katalog' and i + 2 < len(url_parts):
+                        return url_parts[i + 2].replace('-', ' ').title()
+
+        except Exception as e:
+            logger.error(f"Error getting category from API: {e}")
+
+        return "Нет данных"
+
+    async def _get_attributes_dict_from_api(self) -> Dict[str, str]:
+        """Извлечение всех характеристик в виде словаря из API"""
+        try:
+            attributes_dict = {}
+
+            if 'featureGroups' in self.api_data:
+                for group in self.api_data['featureGroups']:
+                    if 'features' in group:
+                        for feature in group['features']:
+                            try:
+                                name = feature.get('name', '')
+                                feature_values = feature.get('featureValues', [])
+
+                                if name and feature_values:
+                                    # Собираем все значения характеристики
+                                    values = []
+                                    for value_obj in feature_values:
+                                        if isinstance(value_obj, dict) and 'value' in value_obj:
+                                            values.append(value_obj['value'])
+                                        elif isinstance(value_obj, str):
+                                            values.append(value_obj)
+
+                                    if values:
+                                        # Если несколько значений, соединяем их
+                                        combined_value = ', '.join(values)
+                                        attributes_dict[name] = combined_value
+
+                            except Exception as e:
+                                logger.debug(f"Error parsing feature: {e}")
+                                continue
+
+            logger.info(f"Extracted {len(attributes_dict)} attributes from API")
+            return attributes_dict
+
+        except Exception as e:
+            logger.error(f"Error getting attributes from API: {e}")
+            return {}
+
+    async def _get_attributes_from_api(self) -> List[Attribute]:
+        """Преобразование характеристик в список объектов из API"""
+        attributes_dict = await self._get_attributes_dict_from_api()
+        return [Attribute(attr_name=key, attr_value=value) for key, value in attributes_dict.items()]
+
+    async def _get_price_info_from_api(self) -> List[PriceInfo]:
+        """Извлечение информации о ценах из API"""
+        try:
+            # Если есть информация о ценах в API данных
+            if 'price' in self.api_data:
+                price_data = self.api_data['price']
+
+                # Может быть простая цена
+                if isinstance(price_data, (int, float)):
+                    return [PriceInfo(qnt=1, discount=0, price=float(price_data))]
+
+                # Или сложная структура с объемными скидками
+                elif isinstance(price_data, dict):
+                    if 'value' in price_data:
+                        main_price = float(price_data['value'])
+
+                        # Проверяем наличие объемных цен
+                        if 'volumePrices' in price_data:
+                            return await self._parse_volume_prices_from_api(price_data['volumePrices'])
+                        else:
+                            # Проверяем наличие скидки
+                            discount = 0
+                            if 'oldPrice' in price_data and price_data['oldPrice']:
+                                old_price = float(price_data['oldPrice'])
+                                if old_price > main_price:
+                                    discount = round(((old_price - main_price) / old_price) * 100, 2)
+
+                            return [PriceInfo(qnt=1, discount=discount, price=main_price)]
+
             return [PriceInfo(qnt=1, discount=0, price=0)]
 
-    async def _get_volume_prices(self) -> List[PriceInfo]:
-        """Извлечение цен из таблицы объемных скидок"""
-        price_infos = []
+        except Exception as e:
+            logger.error(f"Error getting price from API: {e}")
+            return [PriceInfo(qnt=1, discount=0, price=0)]
 
+    async def _parse_volume_prices_from_api(self, volume_prices: List[Dict]) -> List[PriceInfo]:
+        """Парсинг объемных цен из API"""
         try:
-            price_rows = self.page.locator('.prices-table__row')
+            price_infos = []
 
-            for i in range(await price_rows.count()):
-                row = price_rows.nth(i)
+            for price_item in volume_prices:
+                try:
+                    quantity = int(price_item.get('quantity', 1))
+                    price = float(price_item.get('price', 0))
 
-                start_range = await row.get_attribute('data-start-range')
-                price_value = await row.get_attribute('data-price-value')
+                    # Вычисляем скидку относительно первой цены
+                    discount = 0
+                    if price_infos:
+                        base_price = price_infos[0].price
+                        if base_price > price:
+                            discount = round(((base_price - price) / base_price) * 100, 2)
 
-                if start_range and price_value:
-                    try:
-                        quantity = int(start_range)
-                        price = float(price_value)
+                    price_infos.append(PriceInfo(qnt=quantity, discount=discount, price=price))
 
-                        discount = 0
-                        if price_infos:
-                            base_price = price_infos[0].price
-                            if base_price > price:
-                                discount = round(((base_price - price) / base_price) * 100, 2)
-
-                        price_infos.append(PriceInfo(qnt=quantity, discount=discount, price=price))
-
-                    except (ValueError, TypeError):
-                        continue
+                except (ValueError, TypeError) as e:
+                    logger.debug(f"Error parsing volume price item: {e}")
+                    continue
 
             return price_infos if price_infos else [PriceInfo(qnt=1, discount=0, price=0)]
 
         except Exception as e:
-            logger.error(f"Ошибка извлечения объемных цен: {e}")
+            logger.error(f"Error parsing volume prices from API: {e}")
             return [PriceInfo(qnt=1, discount=0, price=0)]
 
-    async def _get_regular_prices(self) -> List[PriceInfo]:
-        """Извлечение обычных цен без объемных скидок"""
+    async def _get_stock_info_from_api(self) -> str:
+        """Извлечение информации о наличии из API"""
         try:
-            main_price = None
-            old_price = None
+            if 'stock' in self.api_data:
+                stock_data = self.api_data['stock']
 
-            main_price_elem = self.page.locator('.js-current-price')
-            if await main_price_elem.count() > 0:
-                price_text = await main_price_elem.text_content()
-                if price_text:
-                    clean_price = re.sub(r'[^\d,.]', '', price_text.strip())
-                    try:
-                        main_price = float(clean_price.replace(',', '.'))
-                    except ValueError:
-                        pass
-
-            old_price_elem = self.page.locator('.product-price__old-price span').first
-            if await old_price_elem.count() > 0:
-                old_price_text = await old_price_elem.text_content()
-                if old_price_text:
-                    clean_old_price = re.sub(r'[^\d,.]', '', old_price_text.replace('\u00a0', ''))
-                    try:
-                        old_price = float(clean_old_price.replace(',', '.'))
-                    except ValueError:
-                        pass
-
-            if main_price and main_price > 0:
-                discount = 0
-                if old_price and old_price > main_price:
-                    discount = round(((old_price - main_price) / old_price) * 100, 2)
-
-                return [PriceInfo(qnt=1, discount=discount, price=main_price)]
-
-            return [PriceInfo(qnt=1, discount=0, price=0)]
+                if isinstance(stock_data, dict):
+                    if 'level' in stock_data:
+                        return str(stock_data['level'])
+                    elif 'status' in stock_data:
+                        return stock_data['status']
+                elif isinstance(stock_data, str):
+                    return stock_data
 
         except Exception as e:
-            logger.error(f"Ошибка извлечения обычной цены: {e}")
-            return [PriceInfo(qnt=1, discount=0, price=0)]
+            logger.error(f"Error getting stock from API: {e}")
 
-    async def _get_stock_info(self) -> str:
-        """Извлечение информации о наличии"""
-        try:
-            stock_count_elem = self.page.locator('.js-product-stock-count')
-            if await stock_count_elem.count() > 0:
-                stock_text = await stock_count_elem.text_content()
-                if stock_text and stock_text.strip():
-                    return stock_text.strip().replace('\u00a0', ' ')
-            return "Нет данных"
-        except Exception:
-            return "Нет данных"
+        return "Нет данных"
 
-    async def _get_delivery_info(self) -> str:
-        """Извлечение информации о доставке"""
-        try:
-            delivery_elem = self.page.locator('.product-status__message--green span')
-            if await delivery_elem.count() > 0:
-                delivery_text = await delivery_elem.text_content()
-                if delivery_text and delivery_text.strip():
-                    return delivery_text.strip()
-            return "Нет данных"
-        except Exception:
-            return "Нет данных"
-
-    async def _get_package_info(self) -> str:
-        """Извлечение информации об упаковке"""
-        try:
-            package_elem = self.page.locator('.transport-package__description').first
-            if await package_elem.count() > 0:
-                package_text = await package_elem.text_content()
-                if package_text and package_text.strip():
-                    return f"В коробе {package_text.strip()}"
-            return "Нет данных"
-        except Exception:
-            return "Нет данных"
-
-    async def _create_supplier_offer(self) -> SupplierOffer:
-        """Создание предложения поставщика"""
-        return SupplierOffer(
-            price=await self._get_price_info(),
-            stock=await self._get_stock_info(),
-            delivery_time=await self._get_delivery_info(),
-            package_info=await self._get_package_info(),
-            purchase_url=self.url
+    async def _create_supplier_from_api(self) -> Supplier:
+        """Создание объекта поставщика из API данных"""
+        offer = SupplierOffer(
+            price=await self._get_price_info_from_api(),
+            stock=await self._get_stock_info_from_api(),
+            delivery_time="Нет данных",  # Возможно есть в API, нужно проверить
+            package_info="Нет данных",  # Возможно есть в API, нужно проверить
+            purchase_url=self.product_url or f"https://www.komus.ru/p/{self.product_id}/"
         )
 
-    async def _create_supplier(self) -> Supplier:
-        """Создание объекта поставщика"""
-        offer = await self._create_supplier_offer()
         return Supplier(supplier_offers=[offer])
