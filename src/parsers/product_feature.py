@@ -332,8 +332,8 @@ class KomusParser(BaseParser):
 
         for price_item in volume_prices:
             try:
-                quantity = int(price_item.get('quantity', 1))
-                price = float(price_item.get('price', 0))
+                quantity = int(price_item.get('minQuantity', 1))  # ✅ Правильное поле
+                price = float(price_item.get('value', 0))  # ✅ Правильное поле
 
                 # Вычисляем скидку относительно базовой цены
                 discount = 0
