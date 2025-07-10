@@ -7,7 +7,7 @@ logger = logging.getLogger(__name__)
 
 class PageScraper:
     async def scrape_page(self, url: str) -> Optional[str]:
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=30) as client:
             try:
                 response = await client.get(url)
                 return response.text

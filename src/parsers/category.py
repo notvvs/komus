@@ -45,8 +45,8 @@ class CategoryParser(BaseParser):
             total_pages = self._calculate_pages_count(soup)
 
             base_url = category_url.split('?')[0].rstrip('/')
-            return [f"{base_url}/f/stocklevelstatus=instock/?page={page}"
-                   for page in range(total_pages)]
+            return [f"{base_url}/?sort=stockRelevance&page={page}"
+                   for page in range(0, total_pages)]
 
         except Exception as e:
             logger.error(f"Error getting category pages: {e}")
