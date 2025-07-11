@@ -1,0 +1,11 @@
+version: '3.8'
+
+services:
+  # Парсер Komus
+  komus_parser:
+    build: .
+    container_name: komus_parser
+    restart: unless-stopped
+    env_file: .env
+    network_mode: "host"
+    command: python main.py
